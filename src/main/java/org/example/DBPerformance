@@ -1,0 +1,63 @@
+package com.newrelic.nrseclibraryparser
+
+import com.newrelic.api.agent.NewRelic
+import com.newrelic.api.agent.Trace
+import org.slf4j.LoggerFactory
+import java.sql.ResultSet
+import java.sql.Timestamp
+import java.time.Instant
+
+class CheckSumCache(
+    private val mySQLBatchInsert: MySQLBatchInsert,
+) {
+    private val log = LoggerFactory.getLogger(CheckSumCache::class.java)
+    private val checksumToGroupIdMap = mutableMapOf<String, String>()
+    private var timestamp: Timestamp = Timestamp.from(Instant.EPOCH)
+
+    @Trace(dispatcher = true)
+    fun updateGroupIdCache() {
+        // Query the DB for all rows where updateAt is greater than 3 hours to update cache
+
+        try {
+            val connection = mySQLBatchInsert.mysqlConnection()
+            val query =
+                "SELECT check_sum, group_id, updated_at FROM group_ids WHERE updated_at > ? AND group_id IS NOT NULL AND group_id != 'Missing'"
+
+            val preparedStatement = connection.prepareStatement(query)
+            preparedStatement.setTimestamp(1, timestamp)
+            val resultSet: ResultSet = preparedStatement.executeQuery()
+
+            while (resultSet.next()) {
+                val updatedAt = resultSet.getTimestamp("updated_at")
+                if (timestamp < updatedAt) {
+                    timestamp = updatedAt
+                }
+                val checksum = resultSet.getString("check_sum")
+                val groupId = resultSet.getString("group_id")
+                checksumToGroupIdMap[checksum] = groupId
+            }
+            log.info("Updated GroupId cache with ${checksumToGroupIdMap.size} entries")
+            preparedStatement.close()
+            connection.close()
+        } catch (e: Exception) {
+            log.error("Error updating GroupId cache: ${e.message}", e)
+            NewRelic.noticeError(e)
+        }
+    }
+
+    fun getGroupId(checkSum: String?): String? = checksumToGroupIdMap[checkSum]
+
+    fun clearCache() {
+        checksumToGroupIdMap.clear()
+    }
+
+    // TODO do something about this
+    fun testSetGroupId(checkSum: String?) {
+        testGetGroupIdInCache(checkSum)
+    }
+
+    // TODO do something about this
+    private fun testGetGroupIdInCache(checkSum: String?) {
+        checksumToGroupIdMap[checkSum!!] = "cachedGroupId"
+    }
+}
